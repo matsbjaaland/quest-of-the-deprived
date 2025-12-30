@@ -5,7 +5,6 @@ const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export async function generateLore(entityName: string, context: string) {
   try {
-    // Fix: Added thinkingBudget to config as required when maxOutputTokens is set
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: `You are a grimdark narrator. Write a 1-sentence atmospheric description for a turn-based combat encounter involving ${entityName}. Context: ${context}. Keep it dark, gothic, and brief.`,
@@ -23,7 +22,6 @@ export async function generateLore(entityName: string, context: string) {
 
 export async function generateRoomDescription() {
   try {
-    // Fix: Added thinkingBudget to config as required when maxOutputTokens is set
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: `You are a Gothic Dungeon Master. Describe the current room the player has entered. Mention damp stones, flickering shadows, and the smell of ancient decay. Keep it to 2 evocative sentences.`,
@@ -40,7 +38,6 @@ export async function generateRoomDescription() {
 
 export async function getCombatFlavor(attacker: string, target: string, action: string, damage: number) {
   try {
-    // Fix: Added thinkingBudget to config as required when maxOutputTokens is set
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: `Grimdark combat log: ${attacker} used ${action} on ${target} for ${damage} damage. Write a short, visceral 1-sentence D&D description.`,
@@ -52,5 +49,21 @@ export async function getCombatFlavor(attacker: string, target: string, action: 
     return response.text?.trim() || `${attacker} strikes ${target} with malice.`;
   } catch (err) {
     return `${attacker} strikes ${target} with malice.`;
+  }
+}
+
+export async function generateEulogy(floor: number) {
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: `Write a visceral, haunting 1-sentence eulogy for a warrior who died on Floor ${floor} of a dark, cosmic dungeon. Style: Dark Souls / Bloodborne narrator.`,
+      config: {
+        maxOutputTokens: 80,
+        thinkingConfig: { thinkingBudget: 40 }
+      }
+    });
+    return response.text?.trim() || `The void claims another. Floor ${floor} is their eternal resting place.`;
+  } catch (err) {
+    return `Another soul claimed by the void. Floor ${floor} marks the end of your legend.`;
   }
 }

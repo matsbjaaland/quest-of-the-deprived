@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { GameState, Entity, Tile, ClassType, Item, Position, EnemyType, Skill, ThreatLevel, Spell, LeaderboardEntry } from './types';
 import { Renderer } from './engine/Renderer';
 import { GRID_WIDTH, GRID_HEIGHT } from './constants';
-import { getCombatFlavor, generateRoomDescription } from './services/gemini';
+import { getCombatFlavor, generateRoomDescription, generateEulogy } from './services/gemini';
 import * as THREE from 'three';
 
 const LOOT_POOL: Omit<Item, 'id'>[] = [
@@ -43,11 +43,13 @@ const App: React.FC = () => {
   const [floatingTextQueue, setFloatingTextQueue] = useState<{ id: string, text: string, pos: { x: number, y: number } }[]>([]);
   const [showDeathScreen, setShowDeathScreen] = useState(false);
   const [tutorialStep, setTutorialStep] = useState(0);
+  const [eulogyText, setEulogyText] = useState("");
 
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<Renderer | null>(null);
   const audioRef = useRef<{ ctx: AudioContext, sounds: any } | null>(null);
-  const requestRef = useRef<number>();
+  // Fix: Line 51 - Added initial value 0 to satisfy TypeScript "Expected 1 arguments, but got 0" error.
+  const requestRef = useRef<number>(0);
 
   useEffect(() => {
     setIsMobile('ontouchstart' in window || navigator.maxTouchPoints > 0);
@@ -114,28 +116,74 @@ const App: React.FC = () => {
     }
   };
 
-  const handleDeath = () => {
+  const handleDeath = async () => {
+    setGameState(GameState.GAME_OVER);
     setShowDeathScreen(true);
-    log(`[DM] Another soul claimed by the void... Floor reached: ${floor}`);
-    // Delay the prompt for dramatic effect
+    const eulogy = await generateEulogy(floor);
+    setEulogyText(eulogy);
+    log(`[DM] FINAL VESTIGE: ${eulogy}`);
+
     setTimeout(() => {
-      const name = prompt("You have fallen. Etch your name into the Stone Hall:") || "Forgotten Soul";
-      const score = floor * 100 + (player?.intelligence || 0);
+      const name = prompt("Death is not the end. Etch your name into the Hall of Heroes:") || "Nameless Vessel";
+      const score = floor * 100 + (player?.intelligence || 0) * 10;
       const entry: LeaderboardEntry = { name, classType: player!.classType, floor, score, timestamp: Date.now() };
       const nextL = [...leaderboard, entry].sort((a, b) => b.score - a.score).slice(0, 10);
-      setLeaderboard(nextL); localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(nextL));
+      setLeaderboard(nextL); 
+      localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(nextL));
       setShowDeathScreen(false);
       setGameState(GameState.START_MENU);
       setPlayer(null);
-    }, 4000);
+    }, 6000);
   };
 
-  // Fixed handleEquip to be correctly wrapped in useCallback. 
-  // Previously, the syntax error from missing useCallback was misinterpreting the dependency array as a variable redeclaration.
+  const handleCombat = useCallback((attacker: Entity, target: any, isPlayer: boolean) => {
+    const statsAttacker = isPlayer ? pStats : attacker;
+    if (!statsAttacker) return;
+    let d20 = Math.floor(Math.random() * 20) + 1;
+    let hit = (d20 + statsAttacker.attackBonus) >= target.ac;
+    if (hit) {
+      let dmg = Math.floor(Math.random() * 10 + 5 + statsAttacker.attackBonus / 2);
+      if (attacker.classType === 'ASTRAL_WEAVER') dmg = 1;
+      rendererRef.current?.spawnBurst(new THREE.Vector3(target.pos.x, 0.6, target.pos.y), isPlayer ? 0x00ffff : 0x4a0404);
+      if (isPlayer) {
+        if (target.id.startsWith('box-')) {
+          const ng = [...grid]; ng[target.pos.y][target.pos.x].type = 'floor';
+          if (Math.random() > 0.4) {
+             let loot = { ...LOOT_POOL[Math.floor(Math.random() * LOOT_POOL.length)], id: `loot-${Date.now()}` };
+             // Deprived Easter Egg: Master Key
+             if (player?.classType === 'DEPRIVED' && Math.random() < 0.01) {
+               loot = { id: `key-${Date.now()}`, name: 'Master Key', type: 'scroll', rarity: 'LEGENDARY', description: 'Forbidden. Bends floor plans. Use to skip a level.', modifier: {} };
+             }
+             ng[target.pos.y][target.pos.x].item = loot;
+          }
+          setGrid(ng); rendererRef.current?.initGrid(ng);
+          if (tutorialStep === 1 && floor === 1) setTutorialStep(2);
+        } else {
+          setEnemies(prev => prev.map(e => e.id === target.id ? { ...e, hp: e.hp - dmg } : e).filter(e => e.hp > 0));
+        }
+      } else {
+        let actualDmg = dmg;
+        if (player && player.mana > 0 && player.classType === 'ASTRAL_WEAVER') {
+          const mDmg = Math.floor(dmg * 0.5); setPlayer(p => p ? { ...p, mana: Math.max(0, p.mana - mDmg) } : null); actualDmg -= mDmg;
+        }
+        setPlayer(p => {
+          if (!p) return null;
+          const nextHp = Math.max(0, p.hp - actualDmg);
+          if (nextHp <= 0 && !showDeathScreen) {
+            handleDeath();
+          }
+          return { ...p, hp: nextHp };
+        });
+      }
+    }
+    if (isPlayer) setPlayer(p => p ? { ...p, actionPoints: Math.max(0, p.actionPoints - 1) } : null);
+  }, [pStats, grid, player, tutorialStep, floor, showDeathScreen]);
+
   const handleEquip = useCallback((item: Item) => {
     if (item.name === 'Master Key') {
-      log("[DM] The void screams as reality folds. Skipping this floor.");
-      setPlayer(p => p ? { ...p, inventory: p.inventory.filter(i => i.id !== item.id), pos: { x: -1, y: -1 } } : null); // Trigger stairs logic
+      log("[DM] The stone groans as reality folds. You descend through forbidden depths.");
+      // Skip the floor logic: simulate stepping into stairs
+      setPlayer(p => p ? { ...p, inventory: p.inventory.filter(i => i.id !== item.id), pos: { x: -1, y: -1 } } : null);
       return;
     }
     if (item.type === 'consumable') {
@@ -153,7 +201,7 @@ const App: React.FC = () => {
     });
   }, [log]);
 
-  const handleTileClick = (target: Position) => {
+  const handleTileClick = useCallback((target: Position) => {
     if (gameState !== GameState.PLAYER_TURN || !player || player.actionPoints <= 0 || showDeathScreen) return;
     const tileAt = grid[target.y][target.x];
     if (tileAt.type === 'wall' && player.classType === 'ASTRAL_WEAVER' && player.phaseShiftAvailable) {
@@ -172,47 +220,7 @@ const App: React.FC = () => {
        setPlayer(p => p ? ({ ...p, pos: target, actionPoints: p.actionPoints - 1 }) : null);
        if (tutorialStep === 0 && floor === 1) setTutorialStep(1);
     }
-  };
-
-  const handleCombat = (attacker: Entity, target: any, isPlayer: boolean) => {
-    const statsAttacker = isPlayer ? pStats : attacker;
-    if (!statsAttacker) return;
-    let d20 = Math.floor(Math.random() * 20) + 1;
-    let hit = (d20 + statsAttacker.attackBonus) >= target.ac;
-    if (hit) {
-      let dmg = Math.floor(Math.random() * 10 + 5 + statsAttacker.attackBonus / 2);
-      if (attacker.classType === 'ASTRAL_WEAVER') dmg = 1;
-      rendererRef.current?.spawnBurst(new THREE.Vector3(target.pos.x, 0.6, target.pos.y), isPlayer ? 0x00ffff : 0x4a0404);
-      if (isPlayer) {
-        if (target.id.startsWith('box-')) {
-          const ng = [...grid]; ng[target.pos.y][target.pos.x].type = 'floor';
-          if (Math.random() > 0.4) {
-             let loot = { ...LOOT_POOL[Math.floor(Math.random() * LOOT_POOL.length)], id: `loot-${Date.now()}` };
-             // Deprived Easter Egg
-             if (player?.classType === 'DEPRIVED' && Math.random() < 0.01) {
-               loot = { id: `key-${Date.now()}`, name: 'Master Key', type: 'scroll', rarity: 'LEGENDARY', description: 'Bends the floor plan to your will. Use to skip a floor.', modifier: {} };
-             }
-             ng[target.pos.y][target.pos.x].item = loot;
-          }
-          setGrid(ng); rendererRef.current?.initGrid(ng);
-          if (tutorialStep === 1 && floor === 1) setTutorialStep(2);
-        } else {
-          setEnemies(prev => prev.map(e => e.id === target.id ? { ...e, hp: e.hp - dmg } : e).filter(e => e.hp > 0));
-        }
-      } else {
-        let actualDmg = dmg;
-        if (player && player.mana > 0 && player.classType === 'ASTRAL_WEAVER') {
-          const mDmg = Math.floor(dmg * 0.5); setPlayer(p => p ? { ...p, mana: Math.max(0, p.mana - mDmg) } : null); actualDmg -= mDmg;
-        }
-        setPlayer(p => {
-          const nextHp = Math.max(0, p!.hp - actualDmg);
-          if (nextHp <= 0) setTimeout(handleDeath, 100);
-          return { ...p!, hp: nextHp };
-        });
-      }
-    }
-    if (isPlayer) setPlayer(p => p ? { ...p, actionPoints: p.actionPoints - 1 } : null);
-  };
+  }, [gameState, player, grid, enemies, showDeathScreen, tutorialStep, floor, log, pStats, handleCombat]);
 
   const selectClass = (type: ClassType) => {
     initAudio();
@@ -254,10 +262,19 @@ const App: React.FC = () => {
     setGrid(ng); setEnemies(spawned); rendererRef.current?.initGrid(ng);
   };
 
+  // Fix: Initialize the Renderer once the container is ready.
   useEffect(() => {
-    if (tutorialStep === 0 && floor === 1 && gameState === GameState.PLAYER_TURN) log("Click the stone to move... stay in the light to survive.");
-    if (tutorialStep === 1 && floor === 1) log("Smash the wooden crates to find the relics of the fallen.");
-    if (tutorialStep === 2 && floor === 1) log("Open your Inventory to equip your destiny.");
+    if (containerRef.current && !rendererRef.current) {
+      rendererRef.current = new Renderer(containerRef.current, handleTileClick);
+    }
+  }, [handleTileClick]);
+
+  useEffect(() => {
+    if (floor === 1 && gameState === GameState.PLAYER_TURN) {
+      if (tutorialStep === 0) log("Click the stone to move... stay in the light to survive.");
+      else if (tutorialStep === 1) log("Smash the wooden crates to find the relics of the fallen.");
+      else if (tutorialStep === 2) log("Open your Inventory to equip your destiny.");
+    }
   }, [tutorialStep, floor, gameState, log]);
 
   useEffect(() => {
@@ -272,10 +289,15 @@ const App: React.FC = () => {
   }, [player?.pos, floor, grid]);
 
   useEffect(() => {
-    const animate = () => { rendererRef.current?.update(player, enemies); requestRef.current = requestAnimationFrame(animate); };
+    const animate = () => { 
+      if (gameState !== GameState.GAME_OVER) {
+        rendererRef.current?.update(player, enemies);
+      }
+      requestRef.current = requestAnimationFrame(animate); 
+    };
     requestRef.current = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(requestRef.current!);
-  }, [player, enemies]);
+  }, [player, enemies, gameState]);
 
   return (
     <div className={`flex flex-col items-center justify-center min-h-screen bg-[#050508] p-2 text-[#d4af37] ${showDeathScreen ? 'death-grayscale' : ''}`}>
@@ -286,15 +308,18 @@ const App: React.FC = () => {
           {isMobile && floatingTextQueue.map(t => <div key={t.id} className="floating-dm-text" style={{ left: t.pos.x, top: t.pos.y }}>{t.text}</div>)}
           
           {showDeathScreen && (
-            <div className="absolute inset-0 z-[100] flex flex-col items-center justify-center bg-black/40">
-              <h2 className="text-8xl font-black text-[#ff0000] drop-shadow-[0_0_20px_#ff0000] uppercase tracking-tighter">YOU PERISHED</h2>
-              <p className="mt-4 text-xl text-white italic animate-pulse">Floor {floor} became your tomb...</p>
+            <div className="absolute inset-0 z-[100] flex flex-col items-center justify-center bg-black/40 text-center px-6">
+              <h2 className="text-7xl font-black text-[#ff0000] drop-shadow-[0_0_20px_#ff0000] uppercase tracking-tighter mb-4">YOU PERISHED</h2>
+              <div className="parchment border-[#4a0404] p-4 bg-black/80 max-w-sm">
+                <p className="text-sm italic text-gray-200">"{eulogyText || `The void claims another. Floor ${floor} is your tomb.`}"</p>
+              </div>
             </div>
           )}
 
           {gameState === GameState.START_MENU && (
             <div className="absolute inset-0 z-50 p-4 flex flex-col items-center justify-center bg-black/80">
               <h1 className="text-7xl text-[#4a0404] font-black uppercase mb-2 tracking-tighter drop-shadow-[0_0_10px_#4a0404]">Grave-Born</h1>
+              <p className="text-[10px] uppercase text-[#3d0158] tracking-[0.4em] mb-8 font-bold">Arcade 3D Dungeon Crawl</p>
               <div className="grid grid-cols-2 gap-4 w-full max-w-md mt-6">
                 {['PALADIN', 'ROGUE', 'DEPRIVED', 'ASTRAL_WEAVER'].map(c => (
                   <button key={c} onClick={() => selectClass(c as ClassType)} onMouseEnter={() => setHoveredClass(c as ClassType)} className="stone-slab p-3 text-xs uppercase font-bold tracking-widest">{c}</button>
@@ -302,7 +327,6 @@ const App: React.FC = () => {
               </div>
               <div className="mt-8 flex gap-6">
                 <button onClick={() => setGameState(GameState.LEADERBOARD)} className="text-[10px] text-[#8a7500] uppercase border-b border-[#8a7500]">Hall of Heroes</button>
-                {hasSave && <button onClick={() => {/* load logic */}} className="text-[10px] text-white uppercase border-b border-white">Continue Journey</button>}
               </div>
             </div>
           )}
@@ -313,10 +337,11 @@ const App: React.FC = () => {
               <div className="w-full max-w-sm space-y-2">
                 {leaderboard.map((e, i) => (
                   <div key={i} className="parchment flex justify-between text-[11px] uppercase">
-                    <span>{e.name}</span>
+                    <span>{e.name} ({e.classType})</span>
                     <span>Floor {e.floor} • {e.score} pts</span>
                   </div>
                 ))}
+                {leaderboard.length === 0 && <p className="text-center text-xs italic text-gray-600">No souls have been etched yet.</p>}
               </div>
               <button onClick={() => setGameState(GameState.START_MENU)} className="mt-8 stone-slab px-10 py-3 uppercase text-sm font-black">Return</button>
             </div>
@@ -325,14 +350,28 @@ const App: React.FC = () => {
           {gameState === GameState.DM_PAUSE && (
              <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center z-50 p-6 text-center">
                <div className="parchment max-w-md">
-                <p className="text-xl italic text-gray-200">"{dmText || "The stone halls hunger for your spirit."}"</p>
+                <p className="text-xl italic text-gray-200">"{dmText || "Awaken, Vessel. The void awaits."}"</p>
                </div>
                <button onClick={() => { setGameState(GameState.PLAYER_TURN); generateRoomDescription().then(msg => log(msg)); }} className="mt-8 px-16 py-4 stone-slab text-purple-300 uppercase font-black text-lg tracking-widest">Enter the Abyss</button>
              </div>
           )}
+
+          {gameState === GameState.UPGRADE_SELECT && (
+             <div className="absolute inset-0 z-[70] bg-black/90 flex flex-col items-center justify-center p-8">
+                <h2 className="text-2xl font-black uppercase mb-8 text-[#3d0158] tracking-widest">Ascension Offered</h2>
+                <div className="space-y-4 w-full max-w-sm">
+                  {availableUpgrades.map(u => (
+                    <button key={u.id} onClick={() => { setPlayer(p => p ? { ...p, skills: [...p.skills, u] } : null); setGameState(GameState.PLAYER_TURN); }} className="stone-slab p-4 w-full text-left hover:scale-105 transition-transform">
+                      <div className="text-xs font-black text-purple-300 uppercase">{u.name}</div>
+                      <div className="text-[10px] text-gray-500">{u.description}</div>
+                    </button>
+                  ))}
+                </div>
+             </div>
+          )}
         </div>
 
-        <div className="w-full lg:w-96 flex flex-col gap-2 h-full">
+        <div className="w-full lg:w-96 flex flex-col gap-2 h-[640px]">
           <div className="stone-slab p-4">
              <div className="flex justify-between items-center mb-2">
                 <h2 className="text-xl font-black text-purple-400 uppercase">{player?.name || 'VESSEL'}</h2>
@@ -373,7 +412,6 @@ const App: React.FC = () => {
              </div>
           </div>
           
-          {/* Inventory Popup (Collapsible for Mobile) */}
           <div className="stone-slab p-4">
             <h3 className="text-[10px] font-black uppercase mb-2 border-b border-[#3d0158]">Backpack</h3>
             <div className="grid grid-cols-1 gap-1 max-h-32 overflow-y-auto custom-scrollbar">
@@ -383,19 +421,18 @@ const App: React.FC = () => {
                     <button onClick={() => handleEquip(item)} className="px-2 py-0.5 stone-slab border-gray-600 text-[8px]">EQUIP</button>
                  </div>
                ))}
-               {player?.inventory.length === 0 && <p className="text-[8px] italic text-gray-600">Empty...</p>}
+               {player?.inventory.length === 0 && <p className="text-[8px] italic text-gray-600 text-center">Empty...</p>}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Mobile Controls Override */}
       {isMobile && gameState === GameState.PLAYER_TURN && !showDeathScreen && (
         <>
           <div id="joystick-container">
             <div id="joystick-knob" />
           </div>
-          <button id="action-button" className="stone-slab text-red-600 border-red-600">ATTACK</button>
+          <button id="action-button" onClick={() => log("Use movement to attack adjacent targets.")} className="stone-slab text-red-600 border-red-600 shadow-[0_0_15px_rgba(255,0,0,0.5)]">ACTION</button>
         </>
       )}
     </div>

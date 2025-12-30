@@ -4,8 +4,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Grave-Born: An 8-Bit 3D Dungeon Crawl</title>
-  <meta name="description" content="A dark-and-darker style RPG with tactical 3D combat, loot, and souls.">
+  <title>Dark D&D: An 8-Bit 3D Crawl</title>
+  <meta name="description" content="Enter the abyss in this dark, 8-bit 3D dungeon crawler. Loot relics, master forbidden spells, and survive the void.">
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Almendra+SC&family=MedievalSharp&display=swap" rel="stylesheet">
   <style>
@@ -37,6 +37,7 @@
       height: 100%;
       pointer-events: none;
       z-index: 40;
+      /* Scanline effect */
       background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.03), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.03));
       background-size: 100% 3px, 3px 100%;
     }
@@ -159,8 +160,8 @@
       border-radius: 50%;
     }
     .death-grayscale {
-      filter: grayscale(1) brightness(0.6) contrast(1.2) !important;
-      transition: filter 2s ease-in-out;
+      filter: grayscale(1) brightness(0.5) contrast(1.4) !important;
+      transition: filter 3s ease-in-out;
     }
   </style>
 <script type="importmap">
