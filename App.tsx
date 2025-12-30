@@ -1,286 +1,234 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { GameState, Entity, Tile, ClassType, Item, Position, EnemyType, Skill, ThreatLevel, Spell, LeaderboardEntry } from './types';
+import { GameState, Entity, Tile, ClassType, Item, Position } from './types';
 import { Renderer } from './engine/Renderer';
-import { GRID_WIDTH, GRID_HEIGHT } from './constants';
+import { COLORS, GRID_WIDTH, GRID_HEIGHT } from './constants';
 import { getCombatFlavor, generateRoomDescription, generateEulogy } from './services/gemini';
-import * as THREE from 'three';
+
+const INITIAL_XP_NEXT = 100;
 
 const LOOT_POOL: Omit<Item, 'id'>[] = [
-  { name: 'Dull Dagger', type: 'weapon', rarity: 'COMMON', description: 'Better than nothing. +2 Attack.', modifier: { attack: 2 } },
-  { name: 'Void Staff', type: 'weapon', rarity: 'RARE', description: 'Magic drips from it. +8 INT.', modifier: { intelligence: 8 } },
-  { name: 'Bloodthirster', type: 'weapon', rarity: 'LEGENDARY', description: 'Hungers for life. +12 Attack.', modifier: { attack: 12 } },
-  { name: 'Shadow Cloak', type: 'armor', rarity: 'LEGENDARY', description: 'Woven from fog. +5 DEF, +1 Move.', modifier: { defense: 5, maxActionPoints: 1 } },
-  { name: 'Ring of Haste', type: 'accessory', rarity: 'RARE', description: 'Time slows down. +1 Move.', modifier: { maxActionPoints: 1 } },
-  { name: 'Greater Potion', type: 'consumable', rarity: 'RARE', description: 'Sparkling essence. Restores 50 HP.', modifier: { hp: 50 } },
-  { name: 'Fireball Scroll', type: 'scroll', rarity: 'RARE', description: 'One-time mass AOE light explosion.', modifier: { attack: 30, isAoe: true } },
-  { name: 'Holy Shield', type: 'armor', rarity: 'RARE', description: 'Sacred protection. +8 DEF.', modifier: { defense: 8 } }
+  { name: 'Shattered Soul-Blade', type: 'weapon', rarity: 'COMMON', description: 'Glows with a faint green light.', modifier: { attack: 8 } },
+  { name: 'Void-Touched Garb', type: 'armor', rarity: 'RARE', description: 'Fabric that absorbs light.', modifier: { defense: 6 } },
+  { name: 'Neon Soul-Fire', type: 'weapon', rarity: 'LEGENDARY', description: 'Primal magic bound in metal.', modifier: { attack: 25 } },
+  { name: 'Charcoal Mask', type: 'hat', rarity: 'COMMON', description: 'Hide your fear.', modifier: { defense: 3 } },
+  { name: 'Ichor Draught', type: 'consumable', rarity: 'COMMON', description: 'Tastes like copper.', modifier: { hp: 50 } }
 ];
-
-const SKILL_UPGRADES: Omit<Skill, 'id'>[] = [
-  { name: 'Swift Step', description: '+1 Move per turn.', modifier: { maxActionPoints: 1 } },
-  { name: 'Second Wind', description: '+20 Max HP.', modifier: { hp: 20 } },
-  { name: 'Arcane Mind', description: '+10 Intelligence.', modifier: { intelligence: 10 } }
-];
-
-const SAVE_KEY = 'grave_born_v2_final_soul';
-const LEADERBOARD_KEY = 'grave_born_leaderboard_v1';
 
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>(GameState.START_MENU);
-  const [floor, setFloor] = useState(1);
-  const [grid, setGrid] = useState<Tile[][]>([]);
+  const [wave, setWave] = useState(1);
   const [player, setPlayer] = useState<Entity | null>(null);
   const [enemies, setEnemies] = useState<Entity[]>([]);
+  const [grid, setGrid] = useState<Tile[][]>(() => 
+    Array.from({ length: GRID_HEIGHT }, () => 
+      Array.from({ length: GRID_WIDTH }, () => ({ type: 'floor' }))
+    )
+  );
   const [combatLog, setCombatLog] = useState<string[]>([]);
-  const [dmText, setDmText] = useState("");
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
-  const [hasSave, setHasSave] = useState(false);
-  const [availableUpgrades, setAvailableUpgrades] = useState<Skill[]>([]);
-  const [hoveredClass, setHoveredClass] = useState<ClassType | null>(null);
-  const [isMobile, setIsMobile] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [floatingTextQueue, setFloatingTextQueue] = useState<{ id: string, text: string, pos: { x: number, y: number } }[]>([]);
-  const [showDeathScreen, setShowDeathScreen] = useState(false);
-  const [tutorialStep, setTutorialStep] = useState(0);
-  const [eulogyText, setEulogyText] = useState("");
-
+  const [narratorMsg, setNarratorMsg] = useState("Face the void...");
+  const [deathEulogy, setDeathEulogy] = useState("");
+  
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<Renderer | null>(null);
-  const audioRef = useRef<{ ctx: AudioContext, sounds: any } | null>(null);
-  const requestRef = useRef<number>(0);
-
-  // Stats calculation
-  const pStats = useMemo(() => {
-    if (!player) return null;
-    let atk = player.attackBonus;
-    let ac = player.ac;
-    let range = player.range;
-    let maxAp = player.maxActionPoints;
-    let maxHp = player.maxHp;
-    let intel = player.intelligence;
-
-    (Object.values(player.equipped) as (Item | undefined)[]).forEach(item => {
-      if (item) {
-        atk += item.modifier.attack || 0;
-        ac += item.modifier.defense || 0;
-        range += item.modifier.range || 0;
-        maxAp += item.modifier.maxActionPoints || 0;
-        intel += item.modifier.intelligence || 0;
-      }
-    });
-
-    player.skills.forEach(s => {
-      atk += s.modifier.attack || 0;
-      ac += s.modifier.defense || 0;
-      intel += s.modifier.intelligence || 0;
-    });
-
-    return { ...player, attackBonus: atk, ac, range, maxActionPoints: maxAp, maxHp, intelligence: intel };
-  }, [player]);
-
-  const initAudio = async () => {
-    if (audioRef.current) return;
-    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    audioRef.current = { ctx, sounds: {} };
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain(); g.gain.value = 0.05; osc.connect(g).connect(ctx.destination);
-    osc.start();
-  };
+  const animFrameRef = useRef<number>(0);
 
   const log = useCallback((msg: string) => {
-    setCombatLog(prev => [msg, ...prev].slice(0, 15));
-    if (isMobile) {
-      const pPos = rendererRef.current?.getPlayerScreenPosition();
-      if (pPos) {
-        const id = Math.random().toString(36).substr(2, 9);
-        setFloatingTextQueue(prev => [...prev, { id, text: msg, pos: pPos }]);
-        setTimeout(() => setFloatingTextQueue(prev => prev.filter(t => t.id !== id)), 2500);
-      }
-    }
-  }, [isMobile]);
+    setCombatLog(prev => [msg, ...prev].slice(0, 8));
+    setNarratorMsg(msg);
+  }, []);
 
-  const handleDeath = async () => {
-    setGameState(GameState.GAME_OVER);
-    setShowDeathScreen(true);
-    const eulogy = await generateEulogy(floor);
-    setEulogyText(eulogy);
-    log(`[DM] FINAL VESTIGE: ${eulogy}`);
-
-    setTimeout(() => {
-      const name = prompt("Death is not the end. Etch your name into the Hall of Heroes:") || "Nameless Vessel";
-      const score = floor * 100 + (player?.intelligence || 0) * 10;
-      const entry: LeaderboardEntry = { name, classType: player!.classType, floor, score, timestamp: Date.now() };
-      const nextL = [...leaderboard, entry].sort((a, b) => b.score - a.score).slice(0, 10);
-      setLeaderboard(nextL);
-      localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(nextL));
-      setShowDeathScreen(false);
-      setGameState(GameState.START_MENU);
-      setPlayer(null);
-    }, 6000);
+  const initGame = (type: ClassType) => {
+    const isDeprived = type === 'DEPRIVED';
+    const newPlayer: Entity = {
+      id: 'player',
+      name: 'Soul-Seeker',
+      classType: type,
+      hp: isDeprived ? 50 : 100,
+      maxHp: isDeprived ? 50 : 100,
+      mana: 50,
+      maxMana: 50,
+      intelligence: isDeprived ? 5 : 10,
+      attackBonus: isDeprived ? 4 : 12,
+      defense: isDeprived ? 0 : 6,
+      ac: isDeprived ? 10 : 14,
+      actionPoints: 3,
+      maxActionPoints: 3,
+      range: 1,
+      pos: { x: 1, y: 1 },
+      inventory: [],
+      equipped: {},
+      gold: 0,
+      xp: 0,
+      level: 1
+    };
+    setPlayer(newPlayer);
+    setWave(1);
+    generateFloor(1);
+    setGameState(GameState.PLAYER_TURN);
+    log("The darkness takes another victim.");
   };
 
-  const handleCombat = useCallback(async (attacker: Entity, target: any, isPlayer: boolean) => {
-    const statsAttacker = isPlayer ? pStats : attacker;
-    if (!statsAttacker) return;
+  const generateFloor = (lvl: number) => {
+    const ng: Tile[][] = Array.from({ length: GRID_HEIGHT }, () => 
+      Array.from({ length: GRID_WIDTH }, () => ({ type: 'floor' }))
+    );
+    
+    // Aesthetic Wall Generation
+    for (let i = 0; i < 6; i++) {
+      const rx = Math.floor(Math.random() * GRID_WIDTH);
+      const ry = Math.floor(Math.random() * GRID_HEIGHT);
+      if (rx >= 0 && rx < GRID_WIDTH && ry >= 0 && ry < GRID_HEIGHT) {
+        if (!(rx === 1 && ry === 1) && !(rx === GRID_WIDTH-1 && ry === GRID_HEIGHT-1)) {
+          if (ng[ry]) ng[ry][rx].type = 'wall';
+        }
+      }
+    }
 
-    let d20 = Math.floor(Math.random() * 20) + 1;
-    let hit = (d20 + statsAttacker.attackBonus) >= target.ac;
+    // Soul-Chests
+    for (let i = 0; i < 2; i++) {
+      let cx, cy;
+      do {
+        cx = Math.floor(Math.random() * GRID_WIDTH);
+        cy = Math.floor(Math.random() * GRID_HEIGHT);
+      } while (!ng[cy] || !ng[cy][cx] || ng[cy][cx].type !== 'floor' || (cx === 1 && cy === 1));
+      if (ng[cy]) ng[cy][cx].type = 'box';
+    }
 
-    if (hit) {
-      let dmg = Math.floor(Math.random() * 10 + 5 + statsAttacker.attackBonus / 2);
-      if (attacker.classType === 'ASTRAL_WEAVER' && isPlayer) dmg = Math.floor(dmg * 0.5);
+    // Grim Enemies
+    const spawned: Entity[] = [];
+    const count = 2 + Math.floor(lvl / 1.5);
+    for (let i = 0; i < count; i++) {
+      let ex, ey;
+      do {
+        ex = Math.floor(Math.random() * GRID_WIDTH);
+        ey = Math.floor(Math.random() * GRID_HEIGHT);
+      } while (!ng[ey] || !ng[ey][ex] || ng[ey][ex].type !== 'floor' || (ex === 1 && ey === 1));
 
-      rendererRef.current?.spawnBurst(new THREE.Vector3(target.pos.x, 0.6, target.pos.y), isPlayer ? 0x00ffff : 0x4a0404);
-      rendererRef.current?.shakeCamera(0.2, 10);
+      spawned.push({
+        id: `en-${Date.now()}-${i}`,
+        name: 'Void Husk',
+        classType: 'FIGHTER',
+        enemyType: 'SKELETON',
+        hp: 40 + lvl * 15,
+        maxHp: 40 + lvl * 15,
+        mana: 0, maxMana: 0, intelligence: 0,
+        attackBonus: 4 + lvl, defense: 2, ac: 8 + lvl,
+        actionPoints: 1, maxActionPoints: 1, range: 1,
+        pos: { x: ex, y: ey },
+        inventory: [], equipped: {}, gold: 15, xp: 50, level: lvl
+      });
+    }
 
-      if (isPlayer) {
-        if (target.id && target.id.startsWith('box-')) {
-          const ng = [...grid];
-          ng[target.pos.y][target.pos.x].type = 'floor';
-          
-          if (Math.random() > 0.4) {
-             const baseLoot = LOOT_POOL[Math.floor(Math.random() * LOOT_POOL.length)];
-             const loot = { ...baseLoot, id: `loot-${Date.now()}` } as Item;
-             if (player?.classType === 'DEPRIVED' && Math.random() < 0.01) {
-               ng[target.pos.y][target.pos.x].item = { 
-                 id: `key-${Date.now()}`, 
-                 name: 'Master Key', 
-                 type: 'scroll', 
-                 rarity: 'LEGENDARY', 
-                 description: 'Forbidden relic. Skips a floor.', 
-                 modifier: {} 
-               };
-             } else {
-               ng[target.pos.y][target.pos.x].item = loot;
-             }
-          }
-          setGrid(ng);
-          rendererRef.current?.initGrid(ng);
-          log("[DM] You shattered a vessel of the past.");
+    setGrid(ng);
+    setEnemies(spawned);
+  };
+
+  // Fixed executeCombat to return a promise that resolves after the juice/animation timeout to sequence turns correctly
+  const executeCombat = async (attacker: Entity, target: Entity, isPlayerAttacking: boolean) => {
+    if (!attacker || !target) return;
+    setGameState(GameState.ANIMATING);
+    
+    // Screen Shake and Juice
+    rendererRef.current?.triggerShake(isPlayerAttacking ? 15 : 20);
+    rendererRef.current?.triggerFlash();
+    rendererRef.current?.spawnBurst(target.pos, isPlayerAttacking ? COLORS.SOUL_FIRE : COLORS.BLOOD_RED);
+
+    const d20 = Math.floor(Math.random() * 20) + 1;
+    const isHit = (d20 + attacker.attackBonus) >= target.ac;
+    
+    if (isHit) {
+      const dmg = Math.floor(Math.random() * 12 + 8 + attacker.attackBonus / 2);
+      if (isPlayerAttacking) {
+        const nextEnemies = enemies.map(e => e.id === target.id ? { ...e, hp: e.hp - dmg } : e);
+        const killed = nextEnemies.find(e => e.id === target.id && e.hp <= 0);
+        
+        if (killed) {
+          setPlayer(p => {
+            if (!p) return null;
+            const newXp = p.xp + (target.xp || 50);
+            if (newXp >= INITIAL_XP_NEXT * p.level) {
+              setGameState(GameState.LEVEL_UP);
+            }
+            return { ...p, xp: newXp, gold: p.gold + (target.gold || 15) };
+          });
+          setEnemies(nextEnemies.filter(e => e.hp > 0));
+          log(`Void-Soul extinguished: ${target.name}.`);
         } else {
-          setEnemies(prev => prev.map(e => e.id === target.id ? { ...e, hp: e.hp - dmg } : e).filter(e => e.hp > 0));
-          const flavor = await getCombatFlavor(attacker.name, target.name, "attack", dmg);
-          log(`[DM] ${flavor}`);
+          setEnemies(nextEnemies);
         }
       } else {
         setPlayer(p => {
           if (!p) return null;
           const nextHp = Math.max(0, p.hp - dmg);
-          if (nextHp <= 0 && !showDeathScreen) handleDeath();
+          if (nextHp <= 0) {
+            setGameState(GameState.GAME_OVER);
+            generateEulogy(wave).then(setDeathEulogy);
+          }
           return { ...p, hp: nextHp };
         });
       }
+      const flavor = await getCombatFlavor(attacker.name, target.name, "Strike", dmg);
+      log(flavor);
     } else {
-      log(`[DM] ${attacker.name} missed their mark.`);
+      log(`${attacker.name} clawed at empty shadows.`);
     }
 
-    if (isPlayer) setPlayer(p => p ? { ...p, actionPoints: Math.max(0, p.actionPoints - 1) } : null);
-  }, [pStats, grid, player, floor, showDeathScreen, log]);
-
-  const castSpell = useCallback(async (spell: Spell) => {
-    if (!player || player.mana < spell.manaCost || player.actionPoints <= 0) {
-      log("[DM] Your spirit is too weary for this ritual.");
-      return;
-    }
-
-    setPlayer(p => p ? { ...p, mana: p.mana - spell.manaCost, actionPoints: p.actionPoints - 1 } : null);
-
-    if (spell.id === 'bolt') {
-      const target = enemies.find(e => {
-        const d = Math.abs(e.pos.x - player.pos.x) + Math.abs(e.pos.y - player.pos.y);
-        return d <= spell.range;
-      });
-      if (target) {
-        rendererRef.current?.triggerMindBolt(player.pos, target.pos);
-        const flavor = await getCombatFlavor(player.name, target.name, spell.name, 15);
-        log(`[DM] ${flavor}`);
-        setEnemies(prev => prev.map(e => e.id === target.id ? { ...e, hp: e.hp - 15 } : e).filter(e => e.hp > 0));
-      } else {
-        log("[DM] The bolt dissolves into the shadows. No target found.");
-      }
-    } else if (spell.id === 'nova') {
-      rendererRef.current?.triggerMagicCircle(player.pos);
-      rendererRef.current?.shakeCamera(0.4, 20);
-      enemies.forEach(e => {
-        const d = Math.abs(e.pos.x - player.pos.x) + Math.abs(e.pos.y - player.pos.y);
-        if (d <= 2) {
-          setEnemies(prev => prev.map(en => en.id === e.id ? { ...en, hp: en.hp - 20 } : en).filter(en => en.hp > 0));
-        }
-      });
-      log("[DM] A void nova erupts, flaying the spirits of the near.");
-    } else if (spell.id === 'sacrifice') {
-      setPlayer(p => p ? ({ ...p, hp: Math.max(1, p.hp - 10), mana: Math.min(p.maxMana, p.mana + 30) }) : null);
-      rendererRef.current?.triggerPotionFlash();
-      log("[DM] Blood for magic. A fair trade in the abyss.");
-    }
-  }, [player, enemies, log]);
-
-  const handleTileClick = useCallback((target: Position) => {
-    if (gameState !== GameState.PLAYER_TURN || !player || player.actionPoints <= 0 || showDeathScreen) return;
-    
-    const tileAt = grid[target.y][target.x];
-    const enemyAt = enemies.find(e => e.pos.x === target.x && e.pos.y === target.y);
-
-    if (enemyAt || tileAt.type === 'box') {
-      const dist = Math.abs(player.pos.x - target.x) + Math.abs(player.pos.y - target.y);
-      if (dist <= (pStats?.range || 1)) {
-        handleCombat(player, enemyAt || { id: `box-${target.x}-${target.y}`, pos: target, ac: 5 }, true);
-      }
-      return;
-    }
-
-    if (tileAt.type === 'floor' || tileAt.type === 'stairs') {
-       setPlayer(p => p ? ({ ...p, pos: target, actionPoints: p.actionPoints - 1 }) : null);
-    }
-  }, [gameState, player, grid, enemies, showDeathScreen, pStats, handleCombat]);
-
-  const selectClass = (type: ClassType) => {
-    initAudio();
-    const defaults = { 
-      ASTRAL_WEAVER: { hp: 60, mana: 100, int: 20, ap: 2, r: 1 },
-      PALADIN: { hp: 160, mana: 40, int: 5, ap: 2, r: 1 },
-      ROGUE: { hp: 110, mana: 40, int: 5, ap: 4, r: 1 },
-      DEPRIVED: { hp: 100, mana: 30, int: 0, ap: 3, r: 1 }
-    }[type as keyof typeof defaults] || { hp: 100, mana: 50, int: 5, ap: 3, r: 1 };
-    
-    const spellbook: Spell[] = [];
-    if (type === 'ASTRAL_WEAVER') {
-      spellbook.push({ id: 'bolt', name: 'Mind Bolt', manaCost: 5, description: 'Piercing mental energy.', range: 4, type: 'damage', effect: () => {} });
-      spellbook.push({ id: 'nova', name: 'Void Nova', manaCost: 20, description: '3x3 AOE blast.', range: 1, type: 'damage', effect: () => {} });
-      spellbook.push({ id: 'sacrifice', name: 'Blood Rite', manaCost: 0, description: '-10 HP for +30 MP.', range: 0, type: 'utility', effect: () => {} });
-    }
-
-    const newP: Entity = { 
-      id: 'player', name: type, classType: type, maxHp: defaults.hp, hp: defaults.hp, mana: defaults.mana, maxMana: defaults.mana, intelligence: defaults.int,
-      attackBonus: 5, defense: 0, ac: 10, actionPoints: defaults.ap, maxActionPoints: defaults.ap, range: defaults.r, pos: { x: 1, y: 1 }, inventory: [], equipped: {}, skills: [], 
-      permanentAbilities: [], skillPoints: 0, smiteAvailable: type === 'PALADIN', phaseShiftAvailable: type === 'ASTRAL_WEAVER', spellbook 
-    };
-    
-    setPlayer(newP); 
-    setFloor(1); 
-    initDungeon(1); 
-    setGameState(GameState.DM_PAUSE);
-    rendererRef.current?.setMenuMode(false);
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        setGameState(current => {
+          if (current === GameState.GAME_OVER || current === GameState.LEVEL_UP) return current;
+          return isPlayerAttacking ? GameState.PLAYER_TURN : GameState.AI_TURN;
+        });
+        resolve();
+      }, 500);
+    });
   };
 
-  const initDungeon = (floorNum: number) => {
-    const ng: Tile[][] = Array.from({ length: GRID_HEIGHT }, () => Array.from({ length: GRID_WIDTH }, () => ({ type: 'wall' })));
-    let x = 1, y = 1; ng[y][x].type = 'floor';
-    for (let i = 0; i < 60; i++) {
-      const d = [[0,1],[0,-1],[1,0],[-1,0]][Math.floor(Math.random()*4)];
-      x = Math.max(1, Math.min(GRID_WIDTH-2, x+d[0])); y = Math.max(1, Math.min(GRID_HEIGHT-2, y+d[1]));
-      ng[y][x].type = 'floor';
-      if (Math.random() < 0.1) ng[y][x].type = 'box';
+  const handleTileClick = (target: Position) => {
+    if (gameState !== GameState.PLAYER_TURN || !player || player.actionPoints <= 0) return;
+    if (target.x < 0 || target.x >= GRID_WIDTH || target.y < 0 || target.y >= GRID_HEIGHT) return;
+
+    const enemyAt = enemies.find(e => e.pos.x === target.x && e.pos.y === target.y);
+    if (enemyAt) {
+      const dist = Math.abs(player.pos.x - target.x) + Math.abs(player.pos.y - target.y);
+      if (dist <= player.range) {
+        executeCombat(player, enemyAt, true);
+        setPlayer(p => p ? { ...p, actionPoints: p.actionPoints - 1 } : null);
+      }
+      return;
     }
-    const spawned: Entity[] = [];
-    for (let i = 0; i < 3 + floorNum; i++) {
-      let ex, ey; do { ex = Math.floor(Math.random()*GRID_WIDTH); ey = Math.floor(Math.random()*GRID_HEIGHT); } while (ng[ey][ex].type !== 'floor' || (ex===1 && ey===1));
-      spawned.push({ id: `en-${Date.now()}-${i}`, name: 'Skeleton', classType: 'FIGHTER' as any, hp: 40, maxHp: 40, attackBonus: 5, defense: 2, ac: 12, actionPoints: 1, maxActionPoints: 1, range: 1, pos: { x: ex, y: ey }, inventory: [], equipped: {}, skills: [], permanentAbilities: [], skillPoints: 0, smiteAvailable: false, phaseShiftAvailable: false, spellbook: [], mana: 0, maxMana: 0, intelligence: 0 });
+
+    const row = grid[target.y];
+    if (!row) return;
+    const tile = row[target.x];
+    if (!tile) return;
+
+    if (tile.type === 'floor') {
+      const dist = Math.abs(player.pos.x - target.x) + Math.abs(player.pos.y - target.y);
+      if (dist === 1) {
+        setPlayer(p => p ? { ...p, pos: target, actionPoints: p.actionPoints - 1 } : null);
+      }
+    } else if (tile.type === 'box') {
+       const dist = Math.abs(player.pos.x - target.x) + Math.abs(player.pos.y - target.y);
+       if (dist === 1) {
+          const loot = LOOT_POOL[Math.floor(Math.random() * LOOT_POOL.length)];
+          const item = { ...loot, id: `loot-${Date.now()}` } as Item;
+          setPlayer(p => p ? { ...p, inventory: [...p.inventory, item], actionPoints: p.actionPoints - 1 } : null);
+          
+          setGrid(prevGrid => {
+            const nextGrid = prevGrid.map((row, y) => {
+              if (y === target.y) {
+                return row.map((t, x) => x === target.x ? { ...t, type: 'floor' } as Tile : t);
+              }
+              return row;
+            });
+            return nextGrid;
+          });
+          
+          log(`Plucked from the void: ${item.name}`);
+       }
     }
-    let sx, sy; do { sx = Math.floor(Math.random()*GRID_WIDTH); sy = Math.floor(Math.random()*GRID_HEIGHT); } while (ng[sy][sx].type !== 'floor' || (sx===1 && sy===1));
-    ng[sy][sx].type = 'stairs';
-    setGrid(ng); setEnemies(spawned); rendererRef.current?.initGrid(ng);
   };
 
   useEffect(() => {
@@ -290,144 +238,162 @@ const App: React.FC = () => {
   }, [handleTileClick]);
 
   useEffect(() => {
-    const animate = () => { 
-      if (gameState !== GameState.GAME_OVER) rendererRef.current?.update(player, enemies);
-      requestRef.current = requestAnimationFrame(animate); 
+    const loop = () => {
+      rendererRef.current?.render(player, enemies, grid);
+      animFrameRef.current = requestAnimationFrame(loop);
     };
-    requestRef.current = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(requestRef.current!);
-  }, [player, enemies, gameState]);
+    animFrameRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(animFrameRef.current);
+  }, [player, enemies, grid]);
 
+  // Wave Transition
   useEffect(() => {
-    if (player && (player.pos.x === -1 || (grid[player.pos.y] && grid[player.pos.y][player.pos.x] && grid[player.pos.y][player.pos.x].type === 'stairs'))) {
-      const choices = Array.from({ length: 3 }, () => ({ ...SKILL_UPGRADES[Math.floor(Math.random() * SKILL_UPGRADES.length)], id: `up-${Date.now()}-${Math.random()}` }));
-      setAvailableUpgrades(choices);
-      setGameState(GameState.UPGRADE_SELECT);
-      const nextFloor = floor + 1;
-      setFloor(nextFloor); initDungeon(nextFloor);
-      setPlayer(p => p ? { ...p, pos: { x: 1, y: 1 } } : null);
+    if (gameState === GameState.PLAYER_TURN && enemies.length === 0 && player) {
+      setGameState(GameState.RESOLVE);
+      setTimeout(() => {
+        setWave(w => w + 1);
+        generateFloor(wave + 1);
+        setPlayer(p => p ? { ...p, pos: { x: 1, y: 1 }, actionPoints: p.maxActionPoints } : null);
+        generateRoomDescription().then(msg => log(msg));
+        setGameState(GameState.PLAYER_TURN);
+      }, 1000);
     }
-  }, [player?.pos, floor, grid]);
+  }, [enemies.length, player, gameState, wave]);
+
+  // AI Turn Logic - Fixed narrowing error by using functional update to check latest state
+  useEffect(() => {
+    if (gameState === GameState.AI_TURN && player) {
+      const executeAiTurns = async () => {
+        await new Promise(r => setTimeout(r, 600));
+        
+        const currentEnemies = [...enemies];
+        
+        for (const en of currentEnemies) {
+          // Check player closure ref (simplified check for turn-based state within closure)
+          if (!player || player.hp <= 0) break;
+
+          const dist = Math.abs(en.pos.x - player.pos.x) + Math.abs(en.pos.y - player.pos.y);
+          if (dist <= en.range) {
+            await executeCombat(en, player, false);
+          } else {
+             const dx = Math.sign(player.pos.x - en.pos.x);
+             const dy = Math.sign(player.pos.y - en.pos.y);
+             const nextPos = { x: en.pos.x + dx, y: en.pos.y + (dx === 0 ? dy : 0) };
+             
+             if (nextPos.y >= 0 && nextPos.y < GRID_HEIGHT && nextPos.x >= 0 && nextPos.x < GRID_WIDTH) {
+               const targetRow = grid[nextPos.y];
+               if (targetRow && targetRow[nextPos.x] && targetRow[nextPos.x].type === 'floor') {
+                  const isOccupied = currentEnemies.some(e => e.id !== en.id && e.pos.x === nextPos.x && e.pos.y === nextPos.y);
+                  if (!isOccupied) {
+                    setEnemies(prev => prev.map(e => e.id === en.id ? { ...e, pos: nextPos } : e));
+                  }
+               }
+             }
+          }
+          await new Promise(r => setTimeout(r, 400));
+        }
+        
+        // Fixed the TypeScript narrowing issue by using a functional update to check the actual current state
+        setGameState(current => {
+          if (current !== GameState.GAME_OVER) {
+            setPlayer(p => p ? { ...p, actionPoints: p.maxActionPoints } : null);
+            return GameState.PLAYER_TURN;
+          }
+          return current;
+        });
+      };
+      executeAiTurns();
+    }
+  }, [gameState]);
 
   return (
-    <div className={`flex flex-col items-center justify-center min-h-screen bg-[#050508] p-2 text-[#d4af37] ${showDeathScreen ? 'death-grayscale' : ''}`}>
-      <div id="game-container" className="flex flex-col lg:flex-row gap-4 relative z-10 w-full max-w-6xl">
-        <div ref={containerRef} className="relative stone-slab shadow-2xl overflow-hidden mx-auto" style={{ width: isMobile ? '100vw' : 640, height: isMobile ? '100vw' : 640 }}>
-          <div className="crt-overlay"></div>
-          <div className="vignette"></div>
-          {isMobile && floatingTextQueue.map(t => <div key={t.id} className="floating-dm-text" style={{ left: t.pos.x, top: t.pos.y }}>{t.text}</div>)}
-          
-          {showDeathScreen && (
-            <div className="absolute inset-0 z-[100] flex flex-col items-center justify-center bg-black/40 text-center px-6">
-              <h2 className="text-7xl font-black text-[#ff0000] drop-shadow-[0_0_20px_#ff0000] uppercase tracking-tighter mb-4">YOU PERISHED</h2>
-              <div className="parchment border-[#4a0404] p-4 bg-black/80 max-w-sm">
-                <p className="text-sm italic text-gray-200">"{eulogyText || `The void claims another soul.`}"</p>
-              </div>
-            </div>
-          )}
+    <div className="crt-container">
+      <div className="narrator-bar">{narratorMsg}</div>
 
+      <div className="flex flex-col lg:flex-row gap-8 items-start justify-center w-full px-4 mt-20">
+        <div ref={containerRef} className="relative stone-ui pulse" style={{ width: 512, height: 512 }}>
           {gameState === GameState.START_MENU && (
-            <div className="absolute inset-0 z-50 p-4 flex flex-col items-center justify-center bg-black/80">
-              <h1 className="text-7xl text-[#4a0404] font-black uppercase mb-2 tracking-tighter drop-shadow-[0_0_10px_#4a0404]">Grave-Born</h1>
-              <div className="grid grid-cols-2 gap-4 w-full max-w-md mt-6">
-                {['PALADIN', 'ROGUE', 'DEPRIVED', 'ASTRAL_WEAVER'].map(c => (
-                  <button key={c} onClick={() => selectClass(c as ClassType)} className="stone-slab p-3 text-xs uppercase font-bold tracking-widest">{c}</button>
+            <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/95">
+              <h1 className="text-5xl font-black text-[#00ff66] mb-8 tracking-tighter uppercase chromatic-aberration">Void Reckoning</h1>
+              <p className="text-[10px] tracking-[0.5em] text-gray-600 mb-12">8-BIT GRIMDARK TACTICS</p>
+              <div className="flex flex-col gap-4 w-64">
+                {['FIGHTER', 'ROGUE', 'DEPRIVED'].map(c => (
+                  <button key={c} onClick={() => initGame(c as ClassType)} className="pixel-button">{c}</button>
                 ))}
               </div>
             </div>
           )}
 
-          {gameState === GameState.DM_PAUSE && (
-             <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center z-50 p-6 text-center">
-               <div className="parchment max-w-md">
-                <p className="text-xl italic text-gray-200">"{dmText || "Awaken, Vessel. The void awaits."}"</p>
-               </div>
-               <button onClick={() => { setGameState(GameState.PLAYER_TURN); generateRoomDescription().then(msg => log(msg)); }} className="mt-8 px-16 py-4 stone-slab text-purple-300 uppercase font-black text-lg tracking-widest">Enter the Abyss</button>
-             </div>
+          {gameState === GameState.LEVEL_UP && (
+            <div className="absolute inset-0 z-[60] flex flex-col items-center justify-center bg-black/90 p-8 text-center border-4 border-[#00ff66]">
+              <h2 className="text-4xl text-[#00ff66] font-black mb-8">SOUL ASCENSION</h2>
+              <div className="grid gap-4 w-full">
+                <button onClick={() => { setPlayer(p => p ? {...p, maxHp: p.maxHp + 40, hp: p.maxHp + 40, level: p.level + 1} : null); setGameState(GameState.PLAYER_TURN); }} className="pixel-button">VITALITY (+40 HP)</button>
+                <button onClick={() => { setPlayer(p => p ? {...p, attackBonus: p.attackBonus + 12, level: p.level + 1} : null); setGameState(GameState.PLAYER_TURN); }} className="pixel-button">SOUL-MIGHT (+12 ATK)</button>
+              </div>
+            </div>
           )}
-
-          {gameState === GameState.UPGRADE_SELECT && (
-             <div className="absolute inset-0 z-[70] bg-black/90 flex flex-col items-center justify-center p-8">
-                <h2 className="text-2xl font-black uppercase mb-8 text-[#3d0158] tracking-widest">Ascension Offered</h2>
-                <div className="space-y-4 w-full max-w-sm">
-                  {availableUpgrades.map(u => (
-                    <button key={u.id} onClick={() => { setPlayer(p => p ? { ...p, skills: [...p.skills, u] } : null); setGameState(GameState.PLAYER_TURN); }} className="stone-slab p-4 w-full text-left hover:scale-105 transition-transform">
-                      <div className="text-xs font-black text-purple-300 uppercase">{u.name}</div>
-                      <div className="text-[10px] text-gray-500">{u.description}</div>
-                    </button>
-                  ))}
-                </div>
-             </div>
+          
+          {gameState === GameState.GAME_OVER && (
+            <div className="absolute inset-0 z-[70] flex flex-col items-center justify-center bg-black/98 p-8 text-center border-4 border-[#7a0000]">
+              <h2 className="text-6xl text-[#7a0000] font-black mb-4">EXTINGUISHED</h2>
+              <p className="text-gray-400 mb-10 italic max-w-xs">{deathEulogy || "The void consumes all eventually."}</p>
+              <button onClick={() => window.location.reload()} className="pixel-button">RECLAIM SOUL</button>
+            </div>
           )}
         </div>
 
-        <div className="w-full lg:w-96 flex flex-col gap-2 h-[640px]">
-          <div className="stone-slab p-4">
-             <div className="flex justify-between items-center mb-2">
-                <h2 className="text-xl font-black text-purple-400 uppercase">{player?.name || 'VESSEL'}</h2>
-                <div className="text-[12px] font-black text-[#8a7500]">FLOOR {floor}</div>
-             </div>
-             <div className="space-y-1">
-               <div className="h-3 bg-black border border-[#4a0404] relative">
-                  <div className="h-full bg-[#ff0000] transition-all duration-500" style={{ width: `${(player?.hp || 0)/(pStats?.maxHp || 1)*100}%` }}></div>
-                  <div className="absolute inset-0 flex items-center justify-center text-[8px] font-black text-white">HP: {player?.hp}/{pStats?.maxHp}</div>
-               </div>
-               <div className="h-3 bg-black border border-blue-900 relative">
-                  <div className="h-full bg-blue-600 transition-all duration-500" style={{ width: `${(player?.mana || 0)/(player?.maxMana || 1)*100}%` }}></div>
-                  <div className="absolute inset-0 flex items-center justify-center text-[8px] font-black text-white">MP: {player?.mana}/{player?.maxMana}</div>
-               </div>
-             </div>
-             <div className="grid grid-cols-3 gap-1 text-[9px] uppercase mt-3">
-                <div className="parchment p-1 flex flex-col items-center"><span>ATK</span><span className="text-white">+{pStats?.attackBonus}</span></div>
-                <div className="parchment p-1 flex flex-col items-center"><span>INT</span><span className="text-white">{pStats?.intelligence}</span></div>
-                <div className="parchment p-1 flex flex-col items-center"><span>AP</span><span className="text-white">{player?.actionPoints}</span></div>
-             </div>
+        <div className="w-full lg:w-80 flex flex-col gap-6">
+          <div className="stone-ui p-4">
+            <h3 className="text-xs text-gray-500 uppercase mb-4 tracking-widest">Soul Essence</h3>
+            <div className="flex justify-between items-center mb-1">
+              <span className="text-[10px] text-[#00ff66]">COHESION</span>
+              <span className="text-[10px]">{player?.hp} / {player?.maxHp}</span>
+            </div>
+            <div className="h-4 bg-black border-2 border-gray-900 overflow-hidden relative">
+              <div className="h-full bg-[#7a0000] shadow-[0_0_10px_#7a0000]" style={{ width: `${(player?.hp || 0) / (player?.maxHp || 1) * 100}%`, transition: 'width 0.3s ease' }}></div>
+            </div>
+            <div className="mt-6 flex justify-between text-[10px] tracking-tighter">
+              <span className="text-gray-500">DEPTH: {wave}</span>
+              <span className="text-[#00ffff]">{player?.xp} SOULS COLLECTED</span>
+            </div>
           </div>
 
-          <div className="stone-slab p-4 flex-1 flex flex-col min-h-0">
-             <h3 className="text-[10px] font-black uppercase mb-2 border-b border-[#3d0158] flex justify-between">
-              <span>Grimoire</span>
-              <span>{player?.mana} / {player?.maxMana}</span>
-             </h3>
-             <div className="grid grid-cols-2 gap-2 mb-4">
-                {player?.spellbook.map(s => (
-                  <button key={s.id} onClick={() => castSpell(s)} className="parchment p-1 text-[8px] uppercase hover:border-[#00ff66] text-center">
-                    {s.name} <br/> <span className="text-blue-400">{s.manaCost} MP</span>
-                  </button>
-                ))}
-             </div>
-             <h3 className="text-[10px] font-black uppercase mb-2 border-b border-[#3d0158]">Chronicle</h3>
-             <div className="flex-1 overflow-y-auto text-[8px] text-gray-500 italic custom-scrollbar space-y-1">
-                {combatLog.map((l, i) => <div key={i} className={i === 0 ? 'text-gray-200' : ''}>{l}</div>)}
-             </div>
+          <div className="stone-ui p-4">
+            <h3 className="text-xs text-gray-500 uppercase mb-4 tracking-widest">Reliquary</h3>
+            <div className="space-y-3 max-h-56 overflow-y-auto pr-2">
+              {player?.inventory.map(item => (
+                <div key={item.id} className="text-[9px] flex justify-between items-center p-2 border border-gray-900 bg-black/40">
+                  <div className="flex flex-col">
+                    <span className={item.rarity === 'LEGENDARY' ? 'text-[#00ff66] font-bold' : 'text-gray-400'}>{item.name}</span>
+                    <span className="text-[7px] text-gray-600">{item.description}</span>
+                  </div>
+                  <button onClick={() => {
+                    if (item.type === 'consumable') {
+                      setPlayer(p => p ? { ...p, hp: Math.min(p.maxHp, p.hp + (item.modifier.hp || 0)), inventory: p.inventory.filter(i => i.id !== item.id) } : null);
+                      log("Consumed restorative ichor.");
+                    } else {
+                      setPlayer(p => {
+                        if (!p) return null;
+                        const slot = item.type as keyof typeof p.equipped;
+                        const prev = p.equipped[slot];
+                        const nextInv = p.inventory.filter(i => i.id !== item.id);
+                        if (prev) nextInv.push(prev);
+                        return { ...p, equipped: { ...p.equipped, [slot]: item }, inventory: nextInv };
+                      });
+                      log(`Equipped ${item.name}.`);
+                    }
+                  }} className="text-[#00ff66] hover:text-white underline">USE</button>
+                </div>
+              ))}
+              {player?.inventory.length === 0 && <div className="text-[10px] text-gray-700 italic">No artifacts found...</div>}
+            </div>
           </div>
-          
-          <div className="stone-slab p-4">
-            <h3 className="text-[10px] font-black uppercase mb-2 border-b border-[#3d0158]">Backpack</h3>
-            <div className="grid grid-cols-1 gap-1 max-h-32 overflow-y-auto custom-scrollbar">
-               {player?.inventory.map(item => (
-                 <div key={item.id} className="parchment p-1 text-[8px] flex justify-between items-center uppercase">
-                    <span className={item.rarity === 'LEGENDARY' ? 'text-yellow-500' : ''}>{item.name}</span>
-                    <button onClick={() => {
-                        if (item.type === 'consumable') {
-                          setPlayer(p => p ? ({ ...p, hp: Math.min(p.maxHp, p.hp + (item.modifier.hp || 0)), inventory: p.inventory.filter(i => i.id !== item.id) }) : null);
-                          rendererRef.current?.triggerPotionFlash();
-                          log("[DM] You quaff the bitter essence.");
-                        } else {
-                          setPlayer(p => {
-                            if (!p) return null;
-                            const slot = item.type as 'weapon' | 'armor' | 'accessory';
-                            const prev = p.equipped[slot];
-                            const nextInv = p.inventory.filter(i => i.id !== item.id);
-                            if (prev) nextInv.push(prev);
-                            return { ...p, equipped: { ...p.equipped, [slot]: item }, inventory: nextInv };
-                          });
-                          log(`[DM] Equipped ${item.name}.`);
-                        }
-                    }} className="px-2 py-0.5 stone-slab border-gray-600 text-[8px]">USE</button>
-                 </div>
-               ))}
-               {player?.inventory.length === 0 && <p className="text-[8px] italic text-gray-600 text-center">Empty...</p>}
+
+          <div className="stone-ui p-4 bg-black/90">
+            <h3 className="text-[10px] text-gray-700 mb-3 uppercase tracking-widest">The Chronicler</h3>
+            <div className="text-[8px] space-y-2 text-gray-500 h-32 overflow-hidden leading-relaxed">
+              {combatLog.map((l, i) => <div key={i} className={i === 0 ? 'text-[#00ff66] opacity-100' : 'opacity-40'}>>> {l}</div>)}
             </div>
           </div>
         </div>

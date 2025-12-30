@@ -4,24 +4,22 @@ export enum GameState {
   CLASS_SELECT = 'CLASS_SELECT',
   DM_PAUSE = 'DM_PAUSE',
   PLAYER_TURN = 'PLAYER_TURN',
-  DM_TURN = 'DM_TURN',
+  AI_TURN = 'AI_TURN',
+  ANIMATING = 'ANIMATING',
+  RESOLVE = 'RESOLVE',
   GAME_OVER = 'GAME_OVER',
-  FLOOR_TRANSITION = 'FLOOR_TRANSITION',
-  UPGRADE_SELECT = 'UPGRADE_SELECT',
-  LEADERBOARD = 'LEADERBOARD'
+  LEVEL_UP = 'LEVEL_UP'
 }
 
-export type ClassType = 'FIGHTER' | 'ROGUE' | 'WARLOCK' | 'RANGER' | 'CLERIC' | 'BARBARIAN' | 'PALADIN' | 'DEPRIVED' | 'ASTRAL_WEAVER';
+export type ClassType = 'FIGHTER' | 'ROGUE' | 'WARLOCK' | 'DEPRIVED';
 export type ItemRarity = 'COMMON' | 'RARE' | 'LEGENDARY';
-export type EnemyType = 'SKELETON' | 'WRAITH' | 'GOLEM';
-export type ThreatLevel = 'QUIET' | 'DANGEROUS' | 'BOSS';
+export type EnemyType = 'SKELETON' | 'WRAITH' | 'CHAMPION';
 
 export interface Position {
   x: number;
   y: number;
 }
 
-// Added Particle interface to fix import error in engine/ParticleSystem.ts
 export interface Particle {
   x: number;
   y: number;
@@ -35,34 +33,10 @@ export interface Particle {
   targetY?: number;
 }
 
-export interface Spell {
-  id: string;
-  name: string;
-  manaCost: number;
-  description: string;
-  range: number;
-  type: 'damage' | 'status' | 'utility';
-  effect: (player: Entity, target?: Position | Entity) => void;
-}
-
-export interface Skill {
-  id: string;
-  name: string;
-  description: string;
-  modifier: {
-    attack?: number;
-    defense?: number;
-    hp?: number;
-    maxActionPoints?: number;
-    mana?: number;
-    intelligence?: number;
-  };
-}
-
 export interface Item {
   id: string;
   name: string;
-  type: 'weapon' | 'armor' | 'accessory' | 'consumable' | 'scroll';
+  type: 'weapon' | 'armor' | 'accessory' | 'consumable' | 'hat';
   rarity: ItemRarity;
   description: string;
   modifier: {
@@ -70,12 +44,8 @@ export interface Item {
     defense?: number;
     hp?: number;
     range?: number;
-    maxActionPoints?: number;
     mana?: number;
     intelligence?: number;
-    isAoe?: boolean;
-    isTeleport?: boolean;
-    isChain?: boolean;
   };
 }
 
@@ -84,7 +54,6 @@ export interface Entity {
   name: string;
   classType: ClassType;
   enemyType?: EnemyType;
-  isElite?: boolean;
   hp: number;
   maxHp: number;
   mana: number;
@@ -102,26 +71,15 @@ export interface Entity {
     weapon?: Item;
     armor?: Item;
     accessory?: Item;
+    hat?: Item;
   };
-  skills: Skill[];
-  spellbook: Spell[];
-  permanentAbilities: Item[];
-  skillPoints: number;
-  smiteAvailable: boolean;
-  phaseShiftAvailable: boolean;
+  gold: number;
+  xp: number;
+  level: number;
   isBoss?: boolean;
-  frozenTurns?: number;
 }
 
 export interface Tile {
   type: 'floor' | 'wall' | 'stairs' | 'box';
   item?: Item;
-}
-
-export interface LeaderboardEntry {
-  name: string;
-  classType: ClassType;
-  floor: number;
-  score: number;
-  timestamp: number;
 }

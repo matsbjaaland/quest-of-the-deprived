@@ -40,7 +40,7 @@ export async function getCombatFlavor(attacker: string, target: string, action: 
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: `Grimdark combat log: ${attacker} used ${action} on ${target} for ${damage} damage. Write a short, visceral 1-sentence D&D description.`,
+      contents: `Grimdark combat log: ${attacker} used ${action} on ${target} for ${damage} damage. Write a short, visceral 1-sentence description.`,
       config: {
         maxOutputTokens: 60,
         thinkingConfig: { thinkingBudget: 30 }
