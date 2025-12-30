@@ -48,7 +48,6 @@ const App: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<Renderer | null>(null);
   const audioRef = useRef<{ ctx: AudioContext, sounds: any } | null>(null);
-  // Fix: Line 51 - Added initial value 0 to satisfy TypeScript "Expected 1 arguments, but got 0" error.
   const requestRef = useRef<number>(0);
 
   useEffect(() => {
@@ -91,34 +90,11 @@ const App: React.FC = () => {
     return { ...player, attackBonus: atk, ac, range, maxActionPoints: maxAp, maxHp, intelligence: intel };
   }, [player]);
 
-  const castSpell = (spell: Spell) => {
-    if (!player || player.mana < spell.manaCost || gameState !== GameState.PLAYER_TURN || showDeathScreen) return;
-    rendererRef.current?.triggerMagicCircle(player.pos);
-    setPlayer(p => p ? { ...p, mana: p.mana - spell.manaCost, actionPoints: p.actionPoints - 1 } : null);
-    const damage = (base: number) => Math.floor(base * (1 + (pStats?.intelligence || 0) * 0.1));
-    if (spell.id === 'nova') {
-      log("[DM] Void Nova erupts!");
-      enemies.forEach(e => {
-        if (Math.abs(e.pos.x - player.pos.x) <= 1 && Math.abs(e.pos.y - player.pos.y) <= 1) {
-          const dmg = damage(25); setEnemies(prev => prev.map(en => en.id === e.id ? { ...en, hp: en.hp - dmg } : en).filter(en => en.hp > 0));
-        }
-      });
-    } else if (spell.id === 'bolt') {
-      const target = enemies[0];
-      if (target && Math.abs(target.pos.x - player.pos.x) + Math.abs(target.pos.y - player.pos.y) <= spell.range) {
-        rendererRef.current?.triggerMindBolt(player.pos, target.pos);
-        const dmg = damage(15);
-        setEnemies(prev => prev.map(en => en.id === target.id ? { ...en, hp: en.hp - dmg } : en).filter(en => en.hp > 0));
-      }
-    } else if (spell.id === 'sacrifice') {
-      setPlayer(p => p ? { ...p, hp: Math.max(1, p.hp - 10), mana: Math.min(p.maxMana, p.mana + 30) } : null);
-      log("[DM] Blood spilled for power.");
-    }
-  };
-
   const handleDeath = async () => {
     setGameState(GameState.GAME_OVER);
     setShowDeathScreen(true);
+    
+    // Fetch a haunting eulogy from the abyss
     const eulogy = await generateEulogy(floor);
     setEulogyText(eulogy);
     log(`[DM] FINAL VESTIGE: ${eulogy}`);
@@ -148,15 +124,30 @@ const App: React.FC = () => {
       if (isPlayer) {
         if (target.id.startsWith('box-')) {
           const ng = [...grid]; ng[target.pos.y][target.pos.x].type = 'floor';
+          
+          let loot: Item | null = null;
           if (Math.random() > 0.4) {
-             let loot = { ...LOOT_POOL[Math.floor(Math.random() * LOOT_POOL.length)], id: `loot-${Date.now()}` };
-             // Deprived Easter Egg: Master Key
+             const baseLoot = LOOT_POOL[Math.floor(Math.random() * LOOT_POOL.length)];
+             loot = { ...baseLoot, id: `loot-${Date.now()}` } as Item;
+             
+             // Deprived Easter Egg: 1% chance for Master Key
              if (player?.classType === 'DEPRIVED' && Math.random() < 0.01) {
-               loot = { id: `key-${Date.now()}`, name: 'Master Key', type: 'scroll', rarity: 'LEGENDARY', description: 'Forbidden. Bends floor plans. Use to skip a level.', modifier: {} };
+               loot = { 
+                 id: `key-${Date.now()}`, 
+                 name: 'Master Key', 
+                 type: 'scroll', 
+                 rarity: 'LEGENDARY', 
+                 description: 'Forbidden. Bends floor plans. Use to skip a level.', 
+                 modifier: {} 
+               } as Item;
              }
              ng[target.pos.y][target.pos.x].item = loot;
           }
-          setGrid(ng); rendererRef.current?.initGrid(ng);
+          
+          setGrid(ng); 
+          rendererRef.current?.initGrid(ng);
+          
+          // Tutorial Progression
           if (tutorialStep === 1 && floor === 1) setTutorialStep(2);
         } else {
           setEnemies(prev => prev.map(e => e.id === target.id ? { ...e, hp: e.hp - dmg } : e).filter(e => e.hp > 0));
@@ -164,7 +155,9 @@ const App: React.FC = () => {
       } else {
         let actualDmg = dmg;
         if (player && player.mana > 0 && player.classType === 'ASTRAL_WEAVER') {
-          const mDmg = Math.floor(dmg * 0.5); setPlayer(p => p ? { ...p, mana: Math.max(0, p.mana - mDmg) } : null); actualDmg -= mDmg;
+          const mDmg = Math.floor(dmg * 0.5); 
+          setPlayer(p => p ? { ...p, mana: Math.max(0, p.mana - mDmg) } : null); 
+          actualDmg -= mDmg;
         }
         setPlayer(p => {
           if (!p) return null;
@@ -182,7 +175,7 @@ const App: React.FC = () => {
   const handleEquip = useCallback((item: Item) => {
     if (item.name === 'Master Key') {
       log("[DM] The stone groans as reality folds. You descend through forbidden depths.");
-      // Skip the floor logic: simulate stepping into stairs
+      // Skip the floor logic: simulate stepping into stairs by moving to a dummy pos that triggers transition
       setPlayer(p => p ? { ...p, inventory: p.inventory.filter(i => i.id !== item.id), pos: { x: -1, y: -1 } } : null);
       return;
     }
@@ -218,9 +211,47 @@ const App: React.FC = () => {
     }
     if (tileAt.type === 'floor' || tileAt.type === 'stairs') {
        setPlayer(p => p ? ({ ...p, pos: target, actionPoints: p.actionPoints - 1 }) : null);
+       // Tutorial Progression
        if (tutorialStep === 0 && floor === 1) setTutorialStep(1);
     }
   }, [gameState, player, grid, enemies, showDeathScreen, tutorialStep, floor, log, pStats, handleCombat]);
+
+  // Defined castSpell to resolve "Cannot find name 'castSpell'" error.
+  // This function manages mana consumption, action points, and executes specific spell logic
+  // including mental energy bolts, AOE void novas, and health-for-mana sacrifices.
+  const castSpell = useCallback(async (spell: Spell) => {
+    if (!player || player.mana < spell.manaCost || player.actionPoints <= 0) {
+      log("[DM] Your spirit wavers. Insufficient mana or focus for this ritual.");
+      return;
+    }
+
+    setPlayer(p => p ? { ...p, mana: p.mana - spell.manaCost, actionPoints: p.actionPoints - 1 } : null);
+
+    if (spell.id === 'bolt') {
+      const target = enemies.find(e => {
+        const d = Math.abs(e.pos.x - player.pos.x) + Math.abs(e.pos.y - player.pos.y);
+        return d <= spell.range;
+      });
+      if (target) {
+        rendererRef.current?.triggerMindBolt(player.pos, target.pos);
+        const flavor = await getCombatFlavor(player.name, target.name, spell.name, 10);
+        log(`[DM] ${flavor}`);
+        handleCombat(player, target, true);
+      } else {
+        log("[DM] The mind bolt dissipates into the dark. No target found.");
+      }
+    } else if (spell.id === 'nova') {
+      rendererRef.current?.triggerMagicCircle(player.pos);
+      enemies.forEach(e => {
+        const d = Math.abs(e.pos.x - player.pos.x) + Math.abs(e.pos.y - player.pos.y);
+        if (d <= 1) handleCombat(player, e, true);
+      });
+      log("[DM] A void nova erupts from your core, tearing at nearby shadows.");
+    } else if (spell.id === 'sacrifice') {
+      setPlayer(p => p ? ({ ...p, hp: Math.max(1, p.hp - 10), mana: Math.min(p.maxMana, p.mana + 30) }) : null);
+      log("[DM] You offer a pint of blood for a draft of pure magic.");
+    }
+  }, [player, enemies, handleCombat, log]);
 
   const selectClass = (type: ClassType) => {
     initAudio();
@@ -230,16 +261,22 @@ const App: React.FC = () => {
       ROGUE: { hp: 110, mana: 40, int: 5, ap: 4, r: 1 },
       DEPRIVED: { hp: 100, mana: 30, int: 0, ap: 3, r: 1 }
     }[type as keyof typeof defaults] || { hp: 100, mana: 50, int: 5, ap: 3, r: 1 };
+    
     const spellbook: Spell[] = [];
     if (type === 'ASTRAL_WEAVER') spellbook.push({ id: 'bolt', name: 'Mind Bolt', manaCost: 5, description: 'Piercing mental energy.', range: 4, type: 'damage', effect: () => {} });
     spellbook.push({ id: 'nova', name: 'Void Nova', manaCost: 20, description: '3x3 AOE blast.', range: 1, type: 'damage', effect: () => {} });
     spellbook.push({ id: 'sacrifice', name: 'Blood Rite', manaCost: 0, description: '-10 HP for +30 MP.', range: 0, type: 'utility', effect: () => {} });
+    
     const newP: Entity = { 
       id: 'player', name: type, classType: type, maxHp: defaults.hp, hp: defaults.hp, mana: defaults.mana, maxMana: defaults.mana, intelligence: defaults.int,
       attackBonus: 5, defense: 0, ac: 10, actionPoints: defaults.ap, maxActionPoints: defaults.ap, range: defaults.r, pos: { x: 1, y: 1 }, inventory: [], equipped: {}, skills: [], 
       permanentAbilities: [], skillPoints: 0, smiteAvailable: type === 'PALADIN', phaseShiftAvailable: type === 'ASTRAL_WEAVER', spellbook 
     };
-    setPlayer(newP); setFloor(1); initDungeon(1); setGameState(GameState.DM_PAUSE);
+    
+    setPlayer(newP); 
+    setFloor(1); 
+    initDungeon(1); 
+    setGameState(GameState.DM_PAUSE);
     rendererRef.current?.setMenuMode(false);
     setTutorialStep(0);
   };
@@ -262,7 +299,6 @@ const App: React.FC = () => {
     setGrid(ng); setEnemies(spawned); rendererRef.current?.initGrid(ng);
   };
 
-  // Fix: Initialize the Renderer once the container is ready.
   useEffect(() => {
     if (containerRef.current && !rendererRef.current) {
       rendererRef.current = new Renderer(containerRef.current, handleTileClick);
@@ -298,6 +334,8 @@ const App: React.FC = () => {
     requestRef.current = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(requestRef.current!);
   }, [player, enemies, gameState]);
+
+  const castSpellHandler = (s: Spell) => castSpell(s);
 
   return (
     <div className={`flex flex-col items-center justify-center min-h-screen bg-[#050508] p-2 text-[#d4af37] ${showDeathScreen ? 'death-grayscale' : ''}`}>
@@ -401,7 +439,7 @@ const App: React.FC = () => {
              </h3>
              <div className="grid grid-cols-2 gap-2 mb-4">
                 {player?.spellbook.map(s => (
-                  <button key={s.id} onClick={() => castSpell(s)} className="parchment p-1 text-[8px] uppercase hover:border-[#00ff66] text-center">
+                  <button key={s.id} onClick={() => castSpellHandler(s)} className="parchment p-1 text-[8px] uppercase hover:border-[#00ff66] text-center">
                     {s.name} <br/> <span className="text-blue-400">{s.manaCost} MP</span>
                   </button>
                 ))}
